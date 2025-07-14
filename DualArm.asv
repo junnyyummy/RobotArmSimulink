@@ -1,0 +1,145 @@
+function ik_duarm_full()
+    % === 导入完整模型 ===
+    DuArm = importrobot("YZYstructure", 'DataFormat', 'struct');
+
+    % === 读取目标末端位置 ===
+    data = readmatrix("joint_log.csv");
+    pos4_all = data(:, 9:11);   % Body4 末端
+    pos8_all = data(:, 15:17);  % Body8 末端
+    N = size(data, 1);
+
+    % === 初始化 ===
+    q_all = zeros(N, 8);
+    q_vec = zeros(8,1);
+    
+    % 关节角度限制 (根据实际硬件调整)
+    joint_limits = repmat([-pi, pi], 8, 1); % 8个关节的[-π, π]范围
+
+    % === 参数 ===
+    alpha = 0.1;    % 初始步长
+    lambda = 0.05;  % 阻尼系数
+    max_iter = 200; % 最大迭代次数
+    tol = 1e-3;     % 收敛容差
+
+    % === 迭代求解 ===
+    for i = 1:N
+        fprintf("\nFrame %d / %d\n", i, N);
+        target1 = pos4_all(i, :)';
+        target2 = pos8_all(i, :)';
+
+        % 传递joint_limits参数
+        [q_vec, success] = dualarm_ik_iter(DuArm, q_vec, target1, target2, joint_limits, alpha, lambda, max_iter, tol);
+        q_all(i, :) = q_vec';
+
+        if ~success
+            fprintf("X No convergence at Frame %d\n", i);
+        end
+    end
+
+    writematrix(q_all, "ik_duarm_result.csv");
+    disp("All frames processed. Results saved to ik_duarm_result.csv");
+end
+
+function [q_vec, success] = dualarm_ik_iter(robot, q_vec, x1_target, x2_target, joint_limits, alpha, lambda, max_iter, tol)
+    success = false;
+    min_alpha = 1e-4;  % 最小步长
+    adaptive_alpha = alpha;
+    best_err = inf;
+    best_q = q_vec;
+    
+    for iter = 1:max_iter
+        % 应用关节限位
+        q_vec = clampJoints(q_vec, joint_limits);
+        
+        % 计算当前位置
+        [x1, x2] = computePositions(robot, q_vec);
+        dx1 = x1_target - x1;
+        dx2 = x2_target - x2;
+        err = norm([dx1; dx2]);
+        fprintf("Iter %d: Error = %.5f\n", iter, err);
+        
+        % 保存最佳状态
+        if err < best_err
+            best_err = err;
+            best_q = q_vec;
+        end
+        
+        % 收敛检查
+        if err < tol
+            success = true;
+            fprintf("✓ Converged at iter %d\n", iter);
+            return;
+        end
+        
+        % 计算雅可比矩阵
+        q_struct = vec2config(robot, q_vec);
+        
+        % 机械臂1雅可比 (Body4, 仅关节1-4)
+        J_full1 = geometricJacobian(robot, q_struct, 'Body4');
+        Jv1 = J_full1(1:3, 1:4);  % 只取前4个关节
+        
+        % 机械臂2雅可比 (Body8, 仅关节5-8)
+        J_full2 = geometricJacobian(robot, q_struct, 'Body8');
+        Jv2 = J_full2(1:3, 5:8);  % 只取后4个关节
+        
+        % 鲁棒伪逆计算 (SVD分解)
+        dq1 = dampedPinv(Jv1, dx1, lambda);
+        dq2 = dampedPinv(Jv2, dx2, lambda);
+        
+        % 组合增量
+        dq = zeros(8, 1);
+        dq(1:4) = adaptive_alpha * dq1;
+        dq(5:8) = adaptive_alpha * dq2;
+        
+        % 更新关节角度
+        q_vec = q_vec + dq;
+        
+        % 自适应步长调整
+        if iter > 5 && best_err < err  % 误差增大时减小步长
+            adaptive_alpha = max(min_alpha, adaptive_alpha * 0.8);
+            fprintf("Reducing alpha to %.4f\n", adaptive_alpha);
+        end
+    end
+    
+    % 未收敛时返回最佳状态
+    q_vec = best_q;
+    fprintf("✗ No convergence after %d iterations (best error = %.5f)\n",...
+            max_iter, best_err);
+end
+
+% 辅助函数：鲁棒伪逆计算
+function dq = dampedPinv(J, dx, lambda)
+    [m, n] = size(J);
+    if m >= n
+        % 超定或方阵系统
+        dq = (J'*J + lambda^2*eye(n)) \ (J'*dx);
+    else
+        % 欠定系统
+        dq = J' / (J*J' + lambda^2*eye(m)) * dx;
+    end
+end
+
+% 辅助函数：关节限位
+function q_clamped = clampJoints(q, limits)
+    q_clamped = q;
+    for j = 1:length(q)
+        q_clamped(j) = min(max(q(j), limits(j,1)), limits(j,2));
+    end
+end
+
+% 辅助函数：计算位置
+function [x1, x2] = computePositions(robot, q_vec)
+    q_struct = vec2config(robot, q_vec);
+    T1 = getTransform(robot, q_struct, 'Body4');
+    T2 = getTransform(robot, q_struct, 'Body8');
+    x1 = tform2trvec(T1)';
+    x2 = tform2trvec(T2)';
+end
+
+% 辅助函数：将向量转换为配置结构体
+function q_struct = vec2config(robot, q_vec)
+    q_struct = homeConfiguration(robot);
+    for i = 1:numel(q_vec)
+        q_struct(i).JointPosition = q_vec(i);
+    end
+end
