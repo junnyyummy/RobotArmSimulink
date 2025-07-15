@@ -1,62 +1,62 @@
-% 双机械臂逆运动学数值解法与误差分析程序
-% 从CSV文件读取末端位置，求解逆运动学，分析关节角度误差和位置误差
+% Dual-arm inverse kinematics numerical solver and error analysis program
+% Read end-effector positions from CSV file, solve inverse kinematics, and analyze joint angle and position errors
 
 clc;
 clear;
 close all;
 
-% 设置CSV文件路径
+% Set CSV file path
 logFilePath = 'joint_log.csv';
 
-% 检查CSV文件是否存在
+% Check if CSV file exists
 if ~isfile(logFilePath)
-    error('CSV文件不存在，请确保joint_log.csv在工作目录下');
+    error('CSV file does not exist, please ensure joint_log.csv is in the working directory');
 end
 
-% 读取CSV文件
+% Read CSV file
 try
     data = readtable(logFilePath);
-    fprintf('成功读取CSV文件，共有%d行数据\n', height(data));
+    fprintf('Successfully read CSV file, total %d rows\n', height(data));
 catch ME
-    error('读取CSV文件失败: %s', ME.message);
+    error('Failed to read CSV file: %s', ME.message);
 end
 
-% 获取数据列数，确保有足够的列
+% Get number of columns to ensure sufficient data
 if width(data) < 20
-    error('CSV文件列数不足，需要至少20列数据');
+    error('CSV file has insufficient columns, at least 20 columns required');
 end
 
-% 提取数据
-% 机械臂1数据
-arm1_actual_joint_angles_rad = table2array(data(:, 1:4));    % 实际关节角度（弧度）
-arm1_target_positions_m = table2array(data(:, 9:11));        % 目标末端位置（x,y,z，单位：m）
+% Extract data
+% Arm 1 data
+arm1_actual_joint_angles_rad = table2array(data(:, 1:4));    % Actual joint angles (radians)
+arm1_target_positions_m = table2array(data(:, 9:11));        % Target end-effector positions (x,y,z, in meters)
 
-% 机械臂2数据
-arm2_actual_joint_angles_rad = table2array(data(:, 5:8));    % 实际关节角度（弧度）
-arm2_target_positions_m = table2array(data(:, 15:17));       % 目标末端位置（x,y,z，单位：m）
+% Arm 2 data
+arm2_actual_joint_angles_rad = table2array(data(:, 5:8));    % Actual joint angles (radians)
+arm2_target_positions_m = table2array(data(:, 15:17));       % Target end-effector positions (x,y,z, in meters)
 
-% 机械臂1的DH参数表
+% DH parameter table for Arm 1
 DH_params_arm1 = [
-    0,    109,   5.1,  -90;  % 世界坐标系到关节1的转换（固定）
-    0,    5.3,   30.9,  90;  % 关节1到关节2的变换
-    0,    0,     270,  -90;  % 关节2到关节3的变换
-    90,   22.8,  0,     90;  % 关节3到关节4的变换
-    0,    250,   0,     0    % 关节4到关节5的变换
+    0,    109,   5.1,  -90;  % Transform from world frame to joint 1 (fixed)
+    0,    5.3,   30.9,  90;  % Transform from joint 1 to joint 2
+    0,    0,     270,  -90;  % Transform from joint 2 to joint 3
+    90,   22.8,  0,     90;  % Transform from joint 3 to joint 4
+    0,    250,   0,     0    % Transform from joint 4 to joint 5
 ];
 
-% 机械臂2的DH参数表
+% DH parameter table for Arm 2
 DH_params_arm2 = [
-    0,    109,   354.9,  90;  % 世界坐标系到关节1的转换（固定）
-    0,    -128.8, 30.9, -90;  % 关节1到关节2的变换
-    0,    0,      270,   90;  % 关节2到关节3的变换
-    90,   22.8,      0,     90;  % 关节3到关节4的变换
-    0,    265,    0,     0    % 关节4到关节5的变换
+    0,    109,   354.9,  90;  % Transform from world frame to joint 1 (fixed)
+    0,    -128.8, 30.9, -90;  % Transform from joint 1 to joint 2
+    0,    0,      270,   90;  % Transform from joint 2 to joint 3
+    90,   22.8,      0,     90;  % Transform from joint 3 to joint 4
+    0,    265,    0,     0    % Transform from joint 4 to joint 5
 ];
 
-% 初始化结果存储
+% Initialize result storage
 num_points = size(arm1_target_positions_m, 1);
 
-% 机械臂1结果存储
+% Arm 1 result storage
 arm1_solved_joint_angles_rad = zeros(num_points, 4);
 arm1_joint_angle_errors_rad = zeros(num_points, 4);
 arm1_joint_angle_errors_deg = zeros(num_points, 4);
@@ -64,7 +64,7 @@ arm1_calculated_positions_m = zeros(num_points, 3);
 arm1_position_errors_m = zeros(num_points, 3);
 arm1_convergence_flags = zeros(num_points, 1);
 
-% 机械臂2结果存储
+% Arm 2 result storage
 arm2_solved_joint_angles_rad = zeros(num_points, 4);
 arm2_joint_angle_errors_rad = zeros(num_points, 4);
 arm2_joint_angle_errors_deg = zeros(num_points, 4);
@@ -72,88 +72,88 @@ arm2_calculated_positions_m = zeros(num_points, 3);
 arm2_position_errors_m = zeros(num_points, 3);
 arm2_convergence_flags = zeros(num_points, 1);
 
-% 逆运动学求解参数
+% Inverse kinematics solving parameters
 options = optimset('Display', 'off', 'TolFun', 1e-6, 'TolX', 1e-6, 'MaxIter', 500);
 
-fprintf('开始双机械臂逆运动学求解...\n');
+fprintf('Starting dual-arm inverse kinematics solving...\n');
 
-% 对每一个目标位置进行逆运动学求解
+% Solve inverse kinematics for each target position
 for i = 1:num_points
-    % === 机械臂1求解 ===
+    % === Arm 1 solving ===
     target_pos_mm_arm1 = arm1_target_positions_m(i, :) * 1000;
     initial_guess_arm1 = arm1_actual_joint_angles_rad(i, :);
-    
+
     objective_function_arm1 = @(joint_angles) inverse_kinematics_objective(joint_angles, target_pos_mm_arm1, DH_params_arm1);
-    
+
     try
         [solved_angles_arm1, fval_arm1, exitflag_arm1] = fminsearch(objective_function_arm1, initial_guess_arm1, options);
         arm1_solved_joint_angles_rad(i, :) = solved_angles_arm1;
         arm1_convergence_flags(i) = (exitflag_arm1 == 1 && fval_arm1 < 1e-3);
     catch ME
-        fprintf('机械臂1数据点 %d 求解失败: %s\n', i, ME.message);
+        fprintf('Arm 1 data point %d failed to solve: %s\n', i, ME.message);
         arm1_solved_joint_angles_rad(i, :) = initial_guess_arm1;
         arm1_convergence_flags(i) = 0;
     end
-    
-    % 计算机械臂1关节角度误差
+
+    % Compute joint angle error for Arm 1
     arm1_joint_angle_errors_rad(i, :) = arm1_solved_joint_angles_rad(i, :) - arm1_actual_joint_angles_rad(i, :);
     arm1_joint_angle_errors_deg(i, :) = arm1_joint_angle_errors_rad(i, :) * 180 / pi;
-    
-    % 机械臂1正运动学验证
+
+    % Forward kinematics verification for Arm 1
     T_final_arm1 = forward_kinematics(arm1_solved_joint_angles_rad(i, :), DH_params_arm1);
     calculated_pos_mm_arm1 = T_final_arm1(1:3, 4);
     arm1_calculated_positions_m(i, :) = calculated_pos_mm_arm1' / 1000;
     arm1_position_errors_m(i, :) = arm1_calculated_positions_m(i, :) - arm1_target_positions_m(i, :);
-    
-    % === 机械臂2求解 ===
+
+    % === Arm 2 solving ===
     target_pos_mm_arm2 = arm2_target_positions_m(i, :) * 1000;
     initial_guess_arm2 = arm2_actual_joint_angles_rad(i, :);
-    
+
     objective_function_arm2 = @(joint_angles) inverse_kinematics_objective(joint_angles, target_pos_mm_arm2, DH_params_arm2);
-    
+
     try
         [solved_angles_arm2, fval_arm2, exitflag_arm2] = fminsearch(objective_function_arm2, initial_guess_arm2, options);
         arm2_solved_joint_angles_rad(i, :) = solved_angles_arm2;
         arm2_convergence_flags(i) = (exitflag_arm2 == 1 && fval_arm2 < 1e-3);
     catch ME
-        fprintf('机械臂2数据点 %d 求解失败: %s\n', i, ME.message);
+        fprintf('Arm 2 data point %d failed to solve: %s\n', i, ME.message);
         arm2_solved_joint_angles_rad(i, :) = initial_guess_arm2;
         arm2_convergence_flags(i) = 0;
     end
-    
-    % 计算机械臂2关节角度误差
+
+    % Compute joint angle error for Arm 2
     arm2_joint_angle_errors_rad(i, :) = arm2_solved_joint_angles_rad(i, :) - arm2_actual_joint_angles_rad(i, :);
     arm2_joint_angle_errors_deg(i, :) = arm2_joint_angle_errors_rad(i, :) * 180 / pi;
-    
-    % 机械臂2正运动学验证
+
+    % Forward kinematics verification for Arm 2
     T_final_arm2 = forward_kinematics(arm2_solved_joint_angles_rad(i, :), DH_params_arm2);
     calculated_pos_mm_arm2 = T_final_arm2(1:3, 4);
     arm2_calculated_positions_m(i, :) = calculated_pos_mm_arm2' / 1000;
     arm2_position_errors_m(i, :) = arm2_calculated_positions_m(i, :) - arm2_target_positions_m(i, :);
-    
-    % 显示进度
+
+    % Display progress
     if mod(i, 100) == 0 || i == num_points
-        fprintf('已处理 %d/%d 个数据点\n', i, num_points);
+        fprintf('Processed %d/%d data points\n', i, num_points);
     end
 end
 
-% === 统计结果 ===
-% 机械臂1统计
+% === Statistical results ===
+% Arm 1 statistics
 arm1_converged_count = sum(arm1_convergence_flags);
 arm1_total_pos_error = sqrt(sum(arm1_position_errors_m.^2, 2));
 
-% 机械臂2统计
+% Arm 2 statistics
 arm2_converged_count = sum(arm2_convergence_flags);
 arm2_total_pos_error = sqrt(sum(arm2_position_errors_m.^2, 2));
 
-% 显示统计结果
-print_statistics('机械臂1', arm1_converged_count, num_points, arm1_joint_angle_errors_rad, ...
+% Display statistical results
+print_statistics('Arm 1', arm1_converged_count, num_points, arm1_joint_angle_errors_rad, ...
                  arm1_joint_angle_errors_deg, arm1_position_errors_m, arm1_total_pos_error);
 
-print_statistics('机械臂2', arm2_converged_count, num_points, arm2_joint_angle_errors_rad, ...
+print_statistics('Arm 2', arm2_converged_count, num_points, arm2_joint_angle_errors_rad, ...
                  arm2_joint_angle_errors_deg, arm2_position_errors_m, arm2_total_pos_error);
 
-% 保存结果到CSV文件
+% Save results to CSV file
 save_results_to_csv(arm1_actual_joint_angles_rad, arm1_solved_joint_angles_rad, ...
                    arm1_joint_angle_errors_rad, arm1_joint_angle_errors_deg, ...
                    arm1_target_positions_m, arm1_calculated_positions_m, ...
@@ -163,31 +163,31 @@ save_results_to_csv(arm1_actual_joint_angles_rad, arm1_solved_joint_angles_rad, 
                    arm2_target_positions_m, arm2_calculated_positions_m, ...
                    arm2_position_errors_m, arm2_total_pos_error, arm2_convergence_flags);
 
-% 绘制误差图表
+% Plot error charts
 create_dual_arm_plots(arm1_joint_angle_errors_deg, arm1_position_errors_m, arm1_total_pos_error, arm1_convergence_flags, ...
                      arm2_joint_angle_errors_deg, arm2_position_errors_m, arm2_total_pos_error, arm2_convergence_flags);
 
-fprintf('\n双机械臂逆运动学分析程序执行完成！\n');
+fprintf('\nDual-arm inverse kinematics analysis program completed!\n');
 
-Ts = 1; % 示例采样时间
+Ts = 1; % Example sampling time
 time_vector = (0:num_points-1)' * Ts;
 
-% 组合成带时间戳的数据矩阵（时间列 + 4个关节列）
+% Combine timestamped data matrix (time column + 4 joint columns)
 arm1_data = [time_vector, arm1_solved_joint_angles_rad];
 arm2_data = [time_vector, arm2_solved_joint_angles_rad];
 
-%% 逆运动学目标函数
+%% Inverse Kinematics Objective Function
 function error = inverse_kinematics_objective(joint_angles, target_position_mm, DH_params)
-    % 目标函数：最小化末端位置误差
+    % Objective function: minimize end-effector position error
     T_final = forward_kinematics(joint_angles, DH_params);
     calculated_position_mm = T_final(1:3, 4);
     position_error = calculated_position_mm' - target_position_mm;
     error = sum(position_error.^2);
 end
 
-%% 正运动学计算函数
+%% Forward Kinematics Calculation Function
 function T_final = forward_kinematics(joint_angles_rad, DH_params_initial)
-    % 正运动学计算
+    % Forward kinematics calculation
     T_final = eye(4);
     
     for i = 1:size(DH_params_initial, 1)
@@ -213,7 +213,7 @@ function T_final = forward_kinematics(joint_angles_rad, DH_params_initial)
     end
 end
 
-%% DH变换矩阵计算函数
+%% DH Transformation Matrix Calculation Function
 function T = dh_transform(theta, d, a, alpha)
     T = [cos(theta), -sin(theta)*cos(alpha),  sin(theta)*sin(alpha), a*cos(theta);
          sin(theta),  cos(theta)*cos(alpha), -cos(theta)*sin(alpha), a*sin(theta);
@@ -221,64 +221,65 @@ function T = dh_transform(theta, d, a, alpha)
          0,           0,                      0,                     1];
 end
 
-%% 打印统计结果函数
+%% Print Statistics Function
 function print_statistics(arm_name, converged_count, num_points, joint_angle_errors_rad, ...
                          joint_angle_errors_deg, position_errors_m, total_pos_error)
-    fprintf('\n=== %s 逆运动学求解完成 ===\n', arm_name);
-    fprintf('处理数据点数量: %d\n', num_points);
-    fprintf('收敛数据点数量: %d (%.1f%%)\n', converged_count, 100*converged_count/num_points);
+    fprintf('\n=== %s Inverse Kinematics Solved ===\n', arm_name);
+    fprintf('Number of data points processed: %d\n', num_points);
+    fprintf('Number of converged points: %d (%.1f%%)\n', converged_count, 100*converged_count/num_points);
     
-    % 关节角度误差统计（弧度）
-    fprintf('\n=== %s 关节角度误差统计 (弧度) ===\n', arm_name);
+    % Joint angle error statistics (radian)
+    fprintf('\n=== %s Joint Angle Error Statistics (radian) ===\n', arm_name);
     joint_mean_error_rad = mean(abs(joint_angle_errors_rad), 1);
     joint_max_error_rad = max(abs(joint_angle_errors_rad), [], 1);
     joint_rms_error_rad = sqrt(mean(joint_angle_errors_rad.^2, 1));
     
     for j = 1:4
-        fprintf('关节%d - 平均误差: %.6f, 最大误差: %.6f, RMS误差: %.6f\n', ...
+        fprintf('Joint %d - Mean Error: %.6f, Max Error: %.6f, RMS Error: %.6f\n', ...
                 j, joint_mean_error_rad(j), joint_max_error_rad(j), joint_rms_error_rad(j));
     end
     
-    % 关节角度误差统计（度）
-    fprintf('\n=== %s 关节角度误差统计 (度) ===\n', arm_name);
+    % Joint angle error statistics (degree)
+    fprintf('\n=== %s Joint Angle Error Statistics (degree) ===\n', arm_name);
     joint_mean_error_deg = mean(abs(joint_angle_errors_deg), 1);
     joint_max_error_deg = max(abs(joint_angle_errors_deg), [], 1);
     joint_rms_error_deg = sqrt(mean(joint_angle_errors_deg.^2, 1));
     
     for j = 1:4
-        fprintf('关节%d - 平均误差: %.3f, 最大误差: %.3f, RMS误差: %.3f\n', ...
+        fprintf('Joint %d - Mean Error: %.3f, Max Error: %.3f, RMS Error: %.3f\n', ...
                 j, joint_mean_error_deg(j), joint_max_error_deg(j), joint_rms_error_deg(j));
     end
     
-    % 位置误差统计
-    fprintf('\n=== %s 位置误差统计 (m) ===\n', arm_name);
+    % Position error statistics
+    fprintf('\n=== %s Position Error Statistics (m) ===\n', arm_name);
     pos_mean_error = mean(abs(position_errors_m), 1);
     pos_max_error = max(abs(position_errors_m), [], 1);
     pos_rms_error = sqrt(mean(position_errors_m.^2, 1));
     
-    fprintf('X轴 - 平均误差: %.6f, 最大误差: %.6f, RMS误差: %.6f\n', ...
+    fprintf('X axis - Mean Error: %.6f, Max Error: %.6f, RMS Error: %.6f\n', ...
             pos_mean_error(1), pos_max_error(1), pos_rms_error(1));
-    fprintf('Y轴 - 平均误差: %.6f, 最大误差: %.6f, RMS误差: %.6f\n', ...
+    fprintf('Y axis - Mean Error: %.6f, Max Error: %.6f, RMS Error: %.6f\n', ...
             pos_mean_error(2), pos_max_error(2), pos_rms_error(2));
-    fprintf('Z轴 - 平均误差: %.6f, 最大误差: %.6f, RMS误差: %.6f\n', ...
+    fprintf('Z axis - Mean Error: %.6f, Max Error: %.6f, RMS Error: %.6f\n', ...
             pos_mean_error(3), pos_max_error(3), pos_rms_error(3));
     
-    fprintf('\n=== %s 位置误差统计 (mm) ===\n', arm_name);
-    fprintf('X轴 - 平均误差: %.3f, 最大误差: %.3f, RMS误差: %.3f\n', ...
+    fprintf('\n=== %s Position Error Statistics (mm) ===\n', arm_name);
+    fprintf('X axis - Mean Error: %.3f, Max Error: %.3f, RMS Error: %.3f\n', ...
             pos_mean_error(1)*1000, pos_max_error(1)*1000, pos_rms_error(1)*1000);
-    fprintf('Y轴 - 平均误差: %.3f, 最大误差: %.3f, RMS误差: %.3f\n', ...
+    fprintf('Y axis - Mean Error: %.3f, Max Error: %.3f, RMS Error: %.3f\n', ...
             pos_mean_error(2)*1000, pos_max_error(2)*1000, pos_rms_error(2)*1000);
-    fprintf('Z轴 - 平均误差: %.3f, 最大误差: %.3f, RMS误差: %.3f\n', ...
+    fprintf('Z axis - Mean Error: %.3f, Max Error: %.3f, RMS Error: %.3f\n', ...
             pos_mean_error(3)*1000, pos_max_error(3)*1000, pos_rms_error(3)*1000);
     
-    % 总体位置误差
-    fprintf('\n=== %s 总体位置误差统计 ===\n', arm_name);
-    fprintf('平均总体误差: %.6f m (%.3f mm)\n', mean(total_pos_error), mean(total_pos_error)*1000);
-    fprintf('最大总体误差: %.6f m (%.3f mm)\n', max(total_pos_error), max(total_pos_error)*1000);
-    fprintf('RMS总体误差: %.6f m (%.3f mm)\n', sqrt(mean(total_pos_error.^2)), sqrt(mean(total_pos_error.^2))*1000);
+    % Overall position error
+    fprintf('\n=== %s Overall Position Error Statistics ===\n', arm_name);
+    fprintf('Mean Total Error: %.6f m (%.3f mm)\n', mean(total_pos_error), mean(total_pos_error)*1000);
+    fprintf('Max Total Error: %.6f m (%.3f mm)\n', max(total_pos_error), max(total_pos_error)*1000);
+    fprintf('RMS Total Error: %.6f m (%.3f mm)\n', sqrt(mean(total_pos_error.^2)), sqrt(mean(total_pos_error.^2))*1000);
 end
 
-%% 保存结果到CSV文件
+
+%% Save Results to CSV File
 function save_results_to_csv(arm1_actual_joint_angles_rad, arm1_solved_joint_angles_rad, ...
                             arm1_joint_angle_errors_rad, arm1_joint_angle_errors_deg, ...
                             arm1_target_positions_m, arm1_calculated_positions_m, ...
@@ -287,10 +288,10 @@ function save_results_to_csv(arm1_actual_joint_angles_rad, arm1_solved_joint_ang
                             arm2_joint_angle_errors_rad, arm2_joint_angle_errors_deg, ...
                             arm2_target_positions_m, arm2_calculated_positions_m, ...
                             arm2_position_errors_m, arm2_total_pos_error, arm2_convergence_flags)
-    
+
     result_filename = 'dual_arm_inverse_kinematics_result.csv';
-    
-    % 创建变量名
+
+    % Create variable names
     variable_names = {
         'Arm1_Actual_J1_rad', 'Arm1_Actual_J2_rad', 'Arm1_Actual_J3_rad', 'Arm1_Actual_J4_rad', ...
         'Arm1_Solved_J1_rad', 'Arm1_Solved_J2_rad', 'Arm1_Solved_J3_rad', 'Arm1_Solved_J4_rad', ...
@@ -309,8 +310,8 @@ function save_results_to_csv(arm1_actual_joint_angles_rad, arm1_solved_joint_ang
         'Arm2_PosErr_X_m', 'Arm2_PosErr_Y_m', 'Arm2_PosErr_Z_m', ...
         'Arm2_Total_Pos_Error_m', 'Arm2_Converged'
     };
-    
-    % 创建数据表
+
+    % Create data table
     result_table = table( ...
     arm1_actual_joint_angles_rad(:,1), arm1_actual_joint_angles_rad(:,2), arm1_actual_joint_angles_rad(:,3), arm1_actual_joint_angles_rad(:,4), ...
     arm1_solved_joint_angles_rad(:,1), arm1_solved_joint_angles_rad(:,2), arm1_solved_joint_angles_rad(:,3), arm1_solved_joint_angles_rad(:,4), ...
@@ -329,169 +330,170 @@ function save_results_to_csv(arm1_actual_joint_angles_rad, arm1_solved_joint_ang
     arm2_position_errors_m(:,1), arm2_position_errors_m(:,2), arm2_position_errors_m(:,3), ...
     arm2_total_pos_error, arm2_convergence_flags, ...
     'VariableNames', variable_names);
-    
+
     writetable(result_table, result_filename);
-    fprintf('\n双机械臂分析结果已保存到文件: %s\n', result_filename);
+    fprintf('\nDual-arm analysis results saved to file: %s\n', result_filename);
 end
 
-%% 绘制双机械臂误差图表
+%% Plot Dual Arm Error Charts
 function create_dual_arm_plots(arm1_joint_errors_deg, arm1_position_errors_m, arm1_total_pos_error, arm1_convergence_flags, ...
                               arm2_joint_errors_deg, arm2_position_errors_m, arm2_total_pos_error, arm2_convergence_flags)
-    
-    % 创建第一个图形：机械臂1分析
-    figure('Name', '机械臂1误差分析', 'Position', [50, 50, 1400, 800]);
-    create_single_arm_plots(arm1_joint_errors_deg, arm1_position_errors_m, arm1_total_pos_error, arm1_convergence_flags, '机械臂1');
+
+    % Create first figure: Arm 1 analysis
+    figure('Name', 'Arm 1 Error Analysis', 'Position', [50, 50, 1400, 800]);
+    create_single_arm_plots(arm1_joint_errors_deg, arm1_position_errors_m, arm1_total_pos_error, arm1_convergence_flags, 'Arm 1');
     saveas(gcf, 'arm1_inverse_kinematics_analysis.png');
-    
-    % 创建第二个图形：机械臂2分析
-    figure('Name', '机械臂2误差分析', 'Position', [100, 100, 1400, 800]);
-    create_single_arm_plots(arm2_joint_errors_deg, arm2_position_errors_m, arm2_total_pos_error, arm2_convergence_flags, '机械臂2');
+
+    % Create second figure: Arm 2 analysis
+    figure('Name', 'Arm 2 Error Analysis', 'Position', [100, 100, 1400, 800]);
+    create_single_arm_plots(arm2_joint_errors_deg, arm2_position_errors_m, arm2_total_pos_error, arm2_convergence_flags, 'Arm 2');
     saveas(gcf, 'arm2_inverse_kinematics_analysis.png');
-    
-    % 创建第三个图形：双机械臂对比
-    figure('Name', '双机械臂对比分析', 'Position', [150, 150, 1400, 800]);
+
+    % Create third figure: Comparison between both arms
+    figure('Name', 'Dual Arm Comparison Analysis', 'Position', [150, 150, 1400, 800]);
     create_dual_arm_comparison_plots(arm1_joint_errors_deg, arm1_position_errors_m, arm1_total_pos_error, ...
                                     arm2_joint_errors_deg, arm2_position_errors_m, arm2_total_pos_error);
     saveas(gcf, 'dual_arm_comparison_analysis.png');
-    
-    fprintf('双机械臂分析图表已保存\n');
+
+    fprintf('Dual-arm analysis plots saved\n');
 end
 
-%% 创建单个机械臂的图表
+
+%% Create Single Arm Plots
 function create_single_arm_plots(joint_errors_deg, position_errors_m, total_pos_error, convergence_flags, arm_name)
-    % 关节角度误差图
+    % Joint angle error plot
     subplot(2, 3, 1);
     plot(1:size(joint_errors_deg,1), joint_errors_deg(:,1), 'r-', 'LineWidth', 1);
     hold on;
     plot(1:size(joint_errors_deg,1), joint_errors_deg(:,2), 'g-', 'LineWidth', 1);
     plot(1:size(joint_errors_deg,1), joint_errors_deg(:,3), 'b-', 'LineWidth', 1);
     plot(1:size(joint_errors_deg,1), joint_errors_deg(:,4), 'm-', 'LineWidth', 1);
-    xlabel('数据点');
-    ylabel('关节角度误差 (度)');
-    title(sprintf('%s 关节角度误差', arm_name));
-    legend('关节1', '关节2', '关节3', '关节4');
+    xlabel('Data Points');
+    ylabel('Joint Angle Error (deg)');
+    title(sprintf('%s Joint Angle Error', arm_name));
+    legend('Joint 1', 'Joint 2', 'Joint 3', 'Joint 4');
     grid on;
-    
-    % 位置误差图
+
+    % Position error plot
     subplot(2, 3, 2);
     plot(1:size(position_errors_m,1), position_errors_m(:,1)*1000, 'r-', 'LineWidth', 1);
     hold on;
     plot(1:size(position_errors_m,1), position_errors_m(:,2)*1000, 'g-', 'LineWidth', 1);
     plot(1:size(position_errors_m,1), position_errors_m(:,3)*1000, 'b-', 'LineWidth', 1);
-    xlabel('数据点');
-    ylabel('位置误差 (mm)');
-    title(sprintf('%s 位置误差', arm_name));
-    legend('X轴误差', 'Y轴误差', 'Z轴误差');
+    xlabel('Data Points');
+    ylabel('Position Error (mm)');
+    title(sprintf('%s Position Error', arm_name));
+    legend('X Error', 'Y Error', 'Z Error');
     grid on;
-    
-    % 总体位置误差图
+
+    % Total position error plot
     subplot(2, 3, 3);
     plot(1:length(total_pos_error), total_pos_error*1000, 'k-', 'LineWidth', 1.5);
-    xlabel('数据点');
-    ylabel('总体位置误差 (mm)');
-    title(sprintf('%s 总体位置误差', arm_name));
+    xlabel('Data Points');
+    ylabel('Total Position Error (mm)');
+    title(sprintf('%s Total Position Error', arm_name));
     grid on;
-    
-    % 关节角度误差分布
+
+    % Joint angle error distribution
     subplot(2, 3, 4);
     joint_total_error = sqrt(sum(joint_errors_deg.^2, 2));
     histogram(joint_total_error, 50);
-    xlabel('关节角度总误差 (度)');
-    ylabel('频次');
-    title(sprintf('%s 关节角度误差分布', arm_name));
+    xlabel('Total Joint Error (deg)');
+    ylabel('Frequency');
+    title(sprintf('%s Joint Angle Error Distribution', arm_name));
     grid on;
-    
-    % 位置误差分布
+
+    % Position error distribution
     subplot(2, 3, 5);
     histogram(total_pos_error*1000, 50);
-    xlabel('总体位置误差 (mm)');
-    ylabel('频次');
-    title(sprintf('%s 位置误差分布', arm_name));
+    xlabel('Total Position Error (mm)');
+    ylabel('Frequency');
+    title(sprintf('%s Position Error Distribution', arm_name));
     grid on;
-    
-    % 收敛情况
+
+    % Convergence flags
     subplot(2, 3, 6);
     plot(1:length(convergence_flags), convergence_flags, 'bo-', 'MarkerSize', 3);
-    xlabel('数据点');
-    ylabel('收敛标志');
-    title(sprintf('%s 收敛情况', arm_name));
+    xlabel('Data Points');
+    ylabel('Convergence Flag');
+    title(sprintf('%s Convergence Status', arm_name));
     ylim([-0.1, 1.1]);
     grid on;
 end
 
-%% 创建双机械臂对比图表
+%% Create Dual Arm Comparison Plots
 function create_dual_arm_comparison_plots(arm1_joint_errors_deg, arm1_position_errors_m, arm1_total_pos_error, ...
                                          arm2_joint_errors_deg, arm2_position_errors_m, arm2_total_pos_error)
-    
-    % 关节角度误差对比 - 关节1和关节2
+
+    % Joint angle error comparison - Joints 1 and 2
     subplot(2, 3, 1);
     plot(1:size(arm1_joint_errors_deg,1), arm1_joint_errors_deg(:,1), 'r-', 'LineWidth', 1);
     hold on;
     plot(1:size(arm1_joint_errors_deg,1), arm1_joint_errors_deg(:,2), 'g-', 'LineWidth', 1);
     plot(1:size(arm2_joint_errors_deg,1), arm2_joint_errors_deg(:,1), 'r--', 'LineWidth', 1);
     plot(1:size(arm2_joint_errors_deg,1), arm2_joint_errors_deg(:,2), 'g--', 'LineWidth', 1);
-    xlabel('数据点');
-    ylabel('关节角度误差 (度)');
-    title('关节1和关节2误差对比');
-    legend('机械臂1-关节1', '机械臂1-关节2', '机械臂2-关节1', '机械臂2-关节2');
+    xlabel('Data Points');
+    ylabel('Joint Angle Error (deg)');
+    title('Joint 1 and 2 Error Comparison');
+    legend('Arm1-Joint1', 'Arm1-Joint2', 'Arm2-Joint1', 'Arm2-Joint2');
     grid on;
-    
-    % 关节角度误差对比 - 关节3和关节4
+
+    % Joint angle error comparison - Joints 3 and 4
     subplot(2, 3, 2);
     plot(1:size(arm1_joint_errors_deg,1), arm1_joint_errors_deg(:,3), 'b-', 'LineWidth', 1);
     hold on;
     plot(1:size(arm1_joint_errors_deg,1), arm1_joint_errors_deg(:,4), 'm-', 'LineWidth', 1);
     plot(1:size(arm2_joint_errors_deg,1), arm2_joint_errors_deg(:,3), 'b--', 'LineWidth', 1);
     plot(1:size(arm2_joint_errors_deg,1), arm2_joint_errors_deg(:,4), 'm--', 'LineWidth', 1);
-    xlabel('数据点');
-    ylabel('关节角度误差 (度)');
-    title('关节3和关节4误差对比');
-    legend('机械臂1-关节3', '机械臂1-关节4', '机械臂2-关节3', '机械臂2-关节4');
+    xlabel('Data Points');
+    ylabel('Joint Angle Error (deg)');
+    title('Joint 3 and 4 Error Comparison');
+    legend('Arm1-Joint3', 'Arm1-Joint4', 'Arm2-Joint3', 'Arm2-Joint4');
     grid on;
-    
-    % 位置误差对比 - X和Y轴
+
+    % Position error comparison - X and Y axes
     subplot(2, 3, 3);
     plot(1:size(arm1_position_errors_m,1), arm1_position_errors_m(:,1)*1000, 'r-', 'LineWidth', 1);
     hold on;
     plot(1:size(arm1_position_errors_m,1), arm1_position_errors_m(:,2)*1000, 'g-', 'LineWidth', 1);
     plot(1:size(arm2_position_errors_m,1), arm2_position_errors_m(:,1)*1000, 'r--', 'LineWidth', 1);
     plot(1:size(arm2_position_errors_m,1), arm2_position_errors_m(:,2)*1000, 'g--', 'LineWidth', 1);
-    xlabel('数据点');
-    ylabel('位置误差 (mm)');
-    title('X和Y轴位置误差对比');
-    legend('机械臂1-X轴', '机械臂1-Y轴', '机械臂2-X轴', '机械臂2-Y轴');
+    xlabel('Data Points');
+    ylabel('Position Error (mm)');
+    title('X and Y Axis Position Error Comparison');
+    legend('Arm1-X', 'Arm1-Y', 'Arm2-X', 'Arm2-Y');
     grid on;
-    
-    % 位置误差对比 - Z轴
+
+    % Position error comparison - Z axis
     subplot(2, 3, 4);
     plot(1:size(arm1_position_errors_m,1), arm1_position_errors_m(:,3)*1000, 'b-', 'LineWidth', 1);
     hold on;
     plot(1:size(arm2_position_errors_m,1), arm2_position_errors_m(:,3)*1000, 'b--', 'LineWidth', 1);
-    xlabel('数据点');
-    ylabel('位置误差 (mm)');
-    title('Z轴位置误差对比');
-    legend('机械臂1-Z轴', '机械臂2-Z轴');
+    xlabel('Data Points');
+    ylabel('Position Error (mm)');
+    title('Z Axis Position Error Comparison');
+    legend('Arm1-Z', 'Arm2-Z');
     grid on;
-    
-    % 总体位置误差对比
+
+    % Total position error comparison
     subplot(2, 3, 5);
     plot(1:length(arm1_total_pos_error), arm1_total_pos_error*1000, 'k-', 'LineWidth', 1.5);
     hold on;
     plot(1:length(arm2_total_pos_error), arm2_total_pos_error*1000, 'k--', 'LineWidth', 1.5);
-    xlabel('数据点');
-    ylabel('总体位置误差 (mm)');
-    title('总体位置误差对比');
-    legend('机械臂1', '机械臂2');
+    xlabel('Data Points');
+    ylabel('Total Position Error (mm)');
+    title('Total Position Error Comparison');
+    legend('Arm1', 'Arm2');
     grid on;
-    
-    % 误差分布对比
+
+    % Position error distribution comparison
     subplot(2, 3, 6);
     histogram(arm1_total_pos_error*1000, 30, 'FaceAlpha', 0.7, 'FaceColor', 'blue');
     hold on;
     histogram(arm2_total_pos_error*1000, 30, 'FaceAlpha', 0.7, 'FaceColor', 'red');
-    xlabel('总体位置误差 (mm)');
-    ylabel('频次');
-    title('总体位置误差分布对比');
-    legend('机械臂1', '机械臂2');
+    xlabel('Total Position Error (mm)');
+    ylabel('Frequency');
+    title('Total Position Error Distribution Comparison');
+    legend('Arm1', 'Arm2');
     grid on;
 end
