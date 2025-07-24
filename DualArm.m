@@ -81,7 +81,8 @@ fprintf('Starting dual-arm inverse kinematics solving...\n');
 for i = 1:num_points
     % === Arm 1 solving ===
     target_pos_mm_arm1 = arm1_target_positions_m(i, :) * 1000;
-    initial_guess_arm1 = arm1_actual_joint_angles_rad(i, :);
+    initial_guess_arm1 = [0,0,0,0];%arm1_actual_joint_angles_rad(1, :);
+
 
     objective_function_arm1 = @(joint_angles) inverse_kinematics_objective(joint_angles, target_pos_mm_arm1, DH_params_arm1);
 
@@ -107,7 +108,7 @@ for i = 1:num_points
 
     % === Arm 2 solving ===
     target_pos_mm_arm2 = arm2_target_positions_m(i, :) * 1000;
-    initial_guess_arm2 = arm2_actual_joint_angles_rad(i, :);
+    initial_guess_arm2 = [0,0,0,0];%arm2_actual_joint_angles_rad(1, :);
 
     objective_function_arm2 = @(joint_angles) inverse_kinematics_objective(joint_angles, target_pos_mm_arm2, DH_params_arm2);
 
